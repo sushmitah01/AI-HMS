@@ -1,6 +1,6 @@
 # AI-HMS 
 # 🏥 AI-Powered Hospital Management System
-### currently deployment isn't working due to free tier session timeout but running on the on local
+### currently deployment taking a little longer than usual to response(working on it) but running fine on the on local
 
 # AI-HMS
 # 🏥 AI-Powered Hospital Management System
