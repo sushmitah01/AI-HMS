@@ -11,15 +11,29 @@ from routes.analytics_routes import analytics_bp
 from routes.auth_routes import auth_bp
 from routes.chat_routes import chat_bp
 from routes.notification_routes import notification_bp
+from routes.billing_routes import billing_bp
+from routes.staff_routes import staff_bp
+
 
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
 
-    # Simplified CORS for deployment (allows all origins)
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    CORS(app, 
+         resources={r"/api/*": {
+             "origins": [
+                 "https://ai-hms-one.vercel.app",
+                 "https://ai-hms.vercel.app",
+                 "http://localhost:5173",
+                 "http://localhost:3000"
+             ]
+         }},
+         supports_credentials=True,
+         allow_headers=["Content-Type", "Authorization"],
+         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    )
     db.init_app(app)
-
+    
     app.register_blueprint(patient_bp, url_prefix='/api')
     app.register_blueprint(doctor_bp, url_prefix='/api')
     app.register_blueprint(appointment_bp, url_prefix='/api')
@@ -29,6 +43,9 @@ def create_app():
     app.register_blueprint(auth_bp, url_prefix='/api')
     app.register_blueprint(chat_bp, url_prefix='/api')
     app.register_blueprint(notification_bp, url_prefix='/api')
+    app.register_blueprint(billing_bp, url_prefix='/api')
+    app.register_blueprint(staff_bp, url_prefix='/api')
+
 
     with app.app_context():
         db.create_all()
