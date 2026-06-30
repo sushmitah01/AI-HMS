@@ -17,7 +17,9 @@ from routes.staff_routes import staff_bp
 
 def create_app():
     app = Flask(__name__)
+    print("DATABASE_URL from env:", os.getenv("DATABASE_URL"))
     app.config.from_object(Config)
+    print("SQLAlchemy URI:", app.config["SQLALCHEMY_DATABASE_URI"])
 
     CORS(app, 
          resources={r"/api/*": {
