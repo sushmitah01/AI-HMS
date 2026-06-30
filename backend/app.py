@@ -2,6 +2,7 @@ from flask import Flask
 from flask_cors import CORS
 from config import Config
 from models import db
+import os
 from routes.patient_routes import patient_bp
 from routes.doctor_routes import doctor_bp
 from routes.appointment_routes import appointment_bp
