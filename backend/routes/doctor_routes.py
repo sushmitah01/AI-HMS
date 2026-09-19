@@ -1,28 +1,35 @@
 from flask import Blueprint, request, jsonify
 from models import db
 from models.doctor import Doctor
+from utils.auth import token_required, roles_required
 
 doctor_bp = Blueprint('doctor_bp', __name__)
 
 @doctor_bp.route('/doctors', methods=['POST'])
+@token_required
+@roles_required('Admin')
 def add_doctor():
     data = request.get_json()
     new_doctor = Doctor(
         name=data['name'],
         specialization=data['specialization'],
         contact=data.get('contact'),
-        availability=data.get('availability')
+        availability=data.get('availability'),
+        consultation_fee=data.get('consultation_fee', 500.0)
     )
+
     db.session.add(new_doctor)
     db.session.commit()
     return jsonify(new_doctor.to_dict()), 201
 
 @doctor_bp.route('/doctors', methods=['GET'])
+@token_required
 def get_doctors():
     doctors = Doctor.query.all()
     return jsonify([d.to_dict() for d in doctors]), 200
 
 @doctor_bp.route('/doctors/<int:id>', methods=['GET'])
+@token_required
 def get_doctor(id):
     from models.user import User
     # Join with User table to get email and registration mobile
@@ -43,10 +50,17 @@ def get_doctor(id):
     return jsonify(data), 200
 
 @doctor_bp.route('/doctors/<int:id>', methods=['PUT'])
+@token_required
+@roles_required('Admin', 'Doctor')
 def update_doctor(id):
     doctor = Doctor.query.get_or_404(id)
+
+    # A Doctor may only edit their own profile; Admins may edit any.
+    if request.current_user.get('role') == 'Doctor' and doctor.user_id != request.current_user.get('user_id'):
+        return jsonify({'error': 'You can only update your own doctor profile'}), 403
+
     data = request.get_json()
-    
+
     # Validation
     if 'email' in data:
         email = data['email']
@@ -67,14 +81,18 @@ def update_doctor(id):
         doctor.contact = data.get('contact', doctor.contact)
         doctor.gender = data.get('gender', doctor.gender)
         doctor.availability = data.get('availability', doctor.availability)
+        doctor.consultation_fee = data.get('consultation_fee', doctor.consultation_fee)
         
         db.session.commit()
+
         return jsonify({'message': 'Doctor updated successfully', 'doctor': doctor.to_dict()}), 200
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
 @doctor_bp.route('/doctors/<int:id>', methods=['DELETE'])
+@token_required
+@roles_required('Admin')
 def delete_doctor(id):
     doctor = Doctor.query.get_or_404(id)
     try:

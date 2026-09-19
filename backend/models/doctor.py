@@ -10,6 +10,8 @@ class Doctor(db.Model):
     contact = db.Column(db.String(20), nullable=True)
     gender = db.Column(db.String(10), nullable=True)
     availability = db.Column(db.String(200), nullable=True) # e.g., "Mon-Fri 09:00-17:00"
+    consultation_fee = db.Column(db.Float, default=500.0)
+
 
     def to_dict(self):
         return {
@@ -19,5 +21,7 @@ class Doctor(db.Model):
             'specialization': self.specialization,
             'contact': self.contact,
             'gender': self.gender,
-            'availability': self.availability
+            'availability': self.availability,
+            'consultation_fee': self.consultation_fee
         }
+

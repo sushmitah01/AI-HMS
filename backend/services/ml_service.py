@@ -1,6 +1,10 @@
 import joblib
 import pandas as pd
 import os
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class MLService:
     def __init__(self):
@@ -11,21 +15,25 @@ class MLService:
             self.risk_model = joblib.load(os.path.join(model_path, 'health_risk_model.joblib'))
             self.readmission_model = joblib.load(os.path.join(model_path, 'readmission_model.joblib'))
         except Exception as e:
-            print(f"Error loading models: {e}")
+            logger.error("Error loading ML models: %s", e)
             self.risk_model = None
             self.readmission_model = None
 
     def predict_health_risk(self, data):
         if not self.risk_model: return "Model Error"
-        
-        df = pd.DataFrame([data])
+
+        # Reindex explicitly to the order the model was trained on — do not
+        # rely on incoming dict/JSON key order, which is not guaranteed
+        # (Flask's JSON encoder can reorder keys, and newer scikit-learn
+        # versions raise a hard error on any column-order mismatch).
+        df = pd.DataFrame([data])[list(self.risk_model.feature_names_in_)]
         prediction = self.risk_model.predict(df)[0]
         return prediction
 
     def predict_readmission(self, data):
         if not self.readmission_model: return 0.0
-        
-        df = pd.DataFrame([data])
+
+        df = pd.DataFrame([data])[list(self.readmission_model.feature_names_in_)]
         probability = self.readmission_model.predict_proba(df)[0][1] # Prob of class 1 (Yes)
         return round(float(probability) * 100, 2)
 

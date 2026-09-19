@@ -6,10 +6,13 @@ from models.patient import Patient
 from models.doctor import Doctor
 from models.appointment import Appointment
 from models.medical_record import MedicalRecord
+from utils.auth import token_required, roles_required
 
 analytics_bp = Blueprint('analytics_bp', __name__)
 
 @analytics_bp.route('/analytics/stats', methods=['GET'])
+@token_required
+@roles_required('Admin', 'Doctor', 'Receptionist')
 def get_stats():
     from flask import request
     doctor_id = request.args.get('doctor_id')
@@ -53,6 +56,8 @@ def get_stats():
     }), 200
 
 @analytics_bp.route('/analytics/trends', methods=['GET'])
+@token_required
+@roles_required('Admin', 'Doctor', 'Receptionist')
 def get_trends():
     # Last 7 days appointment counts
     end_date = datetime.utcnow().date()

@@ -1,8 +1,9 @@
 from flask import Flask
+import os
 from flask_cors import CORS
 from config import Config
 from models import db
-import os
+from utils.limiter import limiter
 from routes.patient_routes import patient_bp
 from routes.doctor_routes import doctor_bp
 from routes.appointment_routes import appointment_bp
@@ -18,25 +19,16 @@ from routes.staff_routes import staff_bp
 
 def create_app():
     app = Flask(__name__)
-    print("DATABASE_URL from env:", os.getenv("DATABASE_URL"))
     app.config.from_object(Config)
-    print("SQLAlchemy URI:", app.config["SQLALCHEMY_DATABASE_URI"])
 
-    CORS(app, 
-         resources={r"/api/*": {
-             "origins": [
-                 "https://ai-hms-one.vercel.app",
-                 "https://ai-hms.vercel.app",
-                 "http://localhost:5173",
-                 "http://localhost:3000"
-             ]
-         }},
-         supports_credentials=True,
-         allow_headers=["Content-Type", "Authorization"],
-         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-    )
+    # CORS origin(s) come from CORS_ORIGINS env var; "*" (dev default) allows any origin.
+    origins = app.config['CORS_ORIGINS']
+    origins = origins.split(',') if origins != '*' else '*'
+    CORS(app, resources={r"/api/*": {"origins": origins}})
+
     db.init_app(app)
-    
+    limiter.init_app(app)
+
     app.register_blueprint(patient_bp, url_prefix='/api')
     app.register_blueprint(doctor_bp, url_prefix='/api')
     app.register_blueprint(appointment_bp, url_prefix='/api')
@@ -62,4 +54,5 @@ def create_app():
 app = create_app()
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    debug_mode = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
+    app.run(debug=debug_mode)

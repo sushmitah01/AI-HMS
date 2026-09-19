@@ -5,6 +5,8 @@ import jwt
 import datetime
 import re
 from flask import current_app
+from utils.auth import token_required, roles_required
+from utils.limiter import limiter
 
 auth_bp = Blueprint('auth_bp', __name__)
 
@@ -36,6 +38,7 @@ def validate_registration(data):
     return None
 
 @auth_bp.route('/auth/register', methods=['POST'])
+@limiter.limit("5 per minute")
 def register():
     data = request.get_json()
     
@@ -47,16 +50,34 @@ def register():
     if User.query.filter_by(email=data['email']).first():
         return jsonify({'error': 'Email already registered'}), 400
 
+    new_role = data.get('role', 'Patient')
+    whitelist_entry = None
+    if new_role in ['Doctor', 'Receptionist', 'Admin']:
+        from models.staff_whitelist import StaffWhitelist
+        # Check by email or staff_id if provided
+        whitelist_entry = StaffWhitelist.query.filter_by(email=data['email'], role=new_role).first()
+        if not whitelist_entry and 'staff_id' in data:
+            whitelist_entry = StaffWhitelist.query.filter_by(staff_id=data['staff_id'], role=new_role).first()
+        
+        if not whitelist_entry:
+            return jsonify({'error': 'You are not authorized to register as hospital staff. Please contact the hospital administration.'}), 403
+        
+        if whitelist_entry.is_registered:
+            return jsonify({'error': 'This staff record has already been used for registration.'}), 400
+
     try:
         new_user = User(
             username=data['username'],
             email=data['email'],
             mobile=data['mobile'],
-            role=data.get('role', 'Doctor')
+            role=new_role
         )
         new_user.set_password(data['password'])
         db.session.add(new_user)
         db.session.flush() # Flush to get new_user.id
+
+        if whitelist_entry:
+            whitelist_entry.is_registered = True
 
         if new_user.role == 'Patient':
             names = data['username'].strip().split(' ', 1)
@@ -92,6 +113,7 @@ def register():
         return jsonify({'error': str(e)}), 500
 
 @auth_bp.route('/auth/login', methods=['POST'])
+@limiter.limit("10 per minute")
 def login():
     data = request.get_json()
     user = User.query.filter_by(email=data.get('email')).first()
@@ -130,17 +152,15 @@ def login():
     return jsonify({'error': 'Invalid credentials'}), 401
 
 @auth_bp.route('/auth/profile', methods=['PUT'])
+@token_required
 def update_profile():
     data = request.get_json()
-    auth_header = request.headers.get('Authorization')
-    if not auth_header:
-        return jsonify({'error': 'Missing token'}), 401
-    
+
     try:
-        token = auth_header.split(" ")[1]
-        decoded = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=['HS256'])
-        user = User.query.get(decoded['user_id'])
-        
+        user = User.query.get(request.current_user['user_id'])
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
         if 'username' in data:
             user.username = data['username']
         if 'mobile' in data:
@@ -155,15 +175,10 @@ def update_profile():
         return jsonify({'error': str(e)}), 401
 
 @auth_bp.route('/auth/me', methods=['GET'])
+@token_required
 def get_current_user():
-    auth_header = request.headers.get('Authorization')
-    if not auth_header:
-        return jsonify({'error': 'Missing token'}), 401
-    
     try:
-        token = auth_header.split(" ")[1]
-        decoded = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=['HS256'])
-        user = User.query.get(decoded['user_id'])
+        user = User.query.get(request.current_user['user_id'])
         if not user:
              return jsonify({'error': 'User not found'}), 404
         
@@ -190,12 +205,15 @@ def get_current_user():
         return jsonify({'error': 'Invalid token'}), 401
 
 @auth_bp.route('/users', methods=['GET'])
+@token_required
+@roles_required('Admin')
 def list_users():
-    # In a real app, add admin check here
     users = User.query.all()
     return jsonify([u.to_dict() for u in users]), 200
 
 @auth_bp.route('/users/<int:id>', methods=['DELETE'])
+@token_required
+@roles_required('Admin')
 def delete_user(id):
     user = User.query.get_or_404(id)
     try:

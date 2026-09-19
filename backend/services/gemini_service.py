@@ -1,7 +1,11 @@
 import google.generativeai as genai
 import os
 import json
+import logging
 from flask import current_app
+
+logger = logging.getLogger(__name__)
+
 
 class GeminiService:
     def __init__(self):
@@ -16,7 +20,7 @@ class GeminiService:
 
     def _get_model(self):
         if not self.model:
-            print("DEBUG: Configuring Gemini model...")
+            logger.debug("Configuring Gemini model...")
             self.configure()
         return self.model
 
@@ -30,7 +34,7 @@ class GeminiService:
                 text = text.split('```')[1].split('```')[0]
             return json.loads(text.strip())
         except Exception as e:
-            print(f"DEBUG: JSON extraction failed: {e}. Raw text: {text}")
+            logger.warning("JSON extraction failed: %s. Raw text: %r", e, text)
             raise e
 
     def predict_diagnosis(self, symptoms):
@@ -46,10 +50,10 @@ class GeminiService:
         """
         try:
             response = model.generate_content(prompt)
-            print(f"DEBUG: Gemini predict_diagnosis response: {response.text}")
+            logger.debug("Gemini predict_diagnosis response: %s", response.text)
             return self._extract_json(response.text)
         except Exception as e:
-            print(f"Gemini Error details: {str(e)}")
+            logger.exception("Gemini predict_diagnosis failed")
             return [{"condition": f"Error: {str(e)}", "confidence": 0}]
 
     def suggest_prescription(self, diagnosis, patient_context=None):
@@ -74,7 +78,7 @@ class GeminiService:
             text = response.text.replace('```json', '').replace('```', '').strip()
             return json.loads(text)
         except Exception as e:
-            print(f"Gemini Error: {e}")
+            logger.exception("Gemini suggest_prescription failed")
             return []
             
     def generate_notes(self, clinical_data):
@@ -188,10 +192,10 @@ class GeminiService:
         """
         try:
             response = model.generate_content(prompt)
-            print(f"DEBUG: Gemini patient_ai_diagnosis response: {response.text}")
+            logger.debug("Gemini patient_ai_diagnosis response: %s", response.text)
             return self._extract_json(response.text)
         except Exception as e:
-            print(f"Gemini Error (Patient Diagnose): {e}")
+            logger.exception("Gemini patient_ai_diagnosis failed")
             return [{"condition": f"Analysis Error ({str(e)})", "confidence": 0, "specialization": "Help Desk", "advice": "Please check backend logs."}]
 
     def symptom_pre_check(self, symptoms):

@@ -5,11 +5,13 @@ from models.payment import Payment
 from models.appointment import Appointment
 from models.notification import Notification
 from datetime import datetime
+from utils.auth import token_required, roles_required
 
 
 billing_bp = Blueprint('billing_bp', __name__)
 
 @billing_bp.route('/bills', methods=['GET'])
+@token_required
 def get_bills():
     status_filter = request.args.get('status')
     patient_id = request.args.get('patient_id')
@@ -25,6 +27,8 @@ def get_bills():
     return jsonify([b.to_dict() for b in bills]), 200
 
 @billing_bp.route('/bills/<int:id>/pay', methods=['POST'])
+@token_required
+@roles_required('Admin', 'Receptionist', 'Patient')
 def record_payment(id):
     bill = Bill.query.get_or_404(id)
     data = request.get_json()
@@ -63,15 +67,12 @@ def record_payment(id):
         return jsonify({'error': str(e)}), 500
 
 @billing_bp.route('/payments/<int:id>/refund', methods=['PUT'])
+@token_required
+@roles_required('Admin')
 def refund_payment(id):
     payment = Payment.query.get_or_404(id)
     data = request.get_json()
-    
-    # Check if user is Admin (should be handled by middleware, but simple check here)
-    # user_role = data.get('role')
-    # if user_role != 'Admin':
-    #     return jsonify({'error': 'Unauthorized'}), 403
-        
+
     payment.status = 'REFUNDED'
     payment.bill.status = 'UNPAID'
     # Optionally reopen appointment? Requirements say "status change only" for refunds.
@@ -80,6 +81,7 @@ def refund_payment(id):
     return jsonify({'message': 'Payment refunded', 'payment': payment.to_dict()}), 200
 
 @billing_bp.route('/bills/<int:id>', methods=['GET'])
+@token_required
 def get_bill(id):
     bill = Bill.query.get_or_404(id)
     data = bill.to_dict()

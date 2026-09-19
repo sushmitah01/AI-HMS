@@ -2,10 +2,13 @@ from flask import Blueprint, request, jsonify
 from datetime import datetime
 from models import db
 from models.patient import Patient
+from utils.auth import token_required, roles_required
 
 patient_bp = Blueprint('patient_bp', __name__)
 
 @patient_bp.route('/patients', methods=['POST'])
+@token_required
+@roles_required('Admin', 'Receptionist')
 def add_patient():
     data = request.get_json()
     
@@ -63,6 +66,7 @@ def add_patient():
         return jsonify({'error': str(e)}), 500
 
 @patient_bp.route('/patients', methods=['GET'])
+@token_required
 def get_patients():
     doctor_id = request.args.get('doctor_id')
     
@@ -82,11 +86,14 @@ def get_patients():
     return jsonify([p.to_dict() for p in patients]), 200
 
 @patient_bp.route('/patients/<int:id>', methods=['GET'])
+@token_required
 def get_patient(id):
     patient = Patient.query.get_or_404(id)
     return jsonify(patient.to_dict()), 200
 
 @patient_bp.route('/patients/<int:id>', methods=['PUT'])
+@token_required
+@roles_required('Admin', 'Receptionist', 'Doctor')
 def update_patient(id):
     patient = Patient.query.get_or_404(id)
     data = request.get_json()
@@ -125,25 +132,14 @@ def update_patient(id):
         return jsonify({'error': str(e)}), 500
 
 @patient_bp.route('/patients/<int:id>', methods=['DELETE'])
+@token_required
+@roles_required('Admin', 'Receptionist')
 def delete_patient(id):
-    # Check for Admin Role
-    import jwt
-    from flask import current_app
-    
-    auth_header = request.headers.get('Authorization')
-    if not auth_header:
-        return jsonify({'error': 'Missing token'}), 401
-    
     try:
-        token = auth_header.split(" ")[1]
-        decoded = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=['HS256'])
-        user_role = decoded.get('role')
-        if user_role not in ['Admin', 'Receptionist']:
-            return jsonify({'error': 'Unauthorized: Only Admins or Receptionists can delete patients'}), 403
-            
         patient = Patient.query.get_or_404(id)
         db.session.delete(patient)
         db.session.commit()
         return jsonify({'message': 'Patient deleted successfully'}), 200
     except Exception as e:
+        db.session.rollback()
         return jsonify({'error': str(e)}), 500

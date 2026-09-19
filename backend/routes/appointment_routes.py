@@ -3,10 +3,15 @@ from datetime import datetime
 from models import db
 from models.appointment import Appointment
 from sqlalchemy import  and_
+from utils.auth import token_required, roles_required
+import logging
+
+logger = logging.getLogger(__name__)
 
 appointment_bp = Blueprint('appointment_bp', __name__)
 
 @appointment_bp.route('/appointments', methods=['POST'])
+@token_required
 def create_appointment():
     data = request.get_json()
     try:
@@ -69,6 +74,7 @@ def create_appointment():
         return jsonify({'error': str(e)}), 500
 
 @appointment_bp.route('/appointments', methods=['GET'])
+@token_required
 def get_appointments():
     date_filter = request.args.get('date')
     doctor_filter = request.args.get('doctor_id')
@@ -87,14 +93,38 @@ def get_appointments():
     return jsonify([a.to_dict() for a in appointments]), 200
 
 @appointment_bp.route('/appointments/<int:id>/status', methods=['PUT'])
+@token_required
+@roles_required('Admin', 'Doctor', 'Receptionist')
 def update_status(id):
     appointment = Appointment.query.get_or_404(id)
     data = request.get_json()
-    appointment.status = data['status']
+    new_status = data['status']
+    
+    if new_status == 'Completed' and appointment.status != 'Completed':
+        # Auto-generate Bill
+        from models.bill import Bill
+        # Check if bill already exists to avoid duplicates
+        existing_bill = Bill.query.filter_by(appointment_id=appointment.id).first()
+        if not existing_bill:
+            amount = appointment.doctor.consultation_fee if appointment.doctor else 500.0
+            new_bill = Bill(appointment_id=appointment.id, amount=amount)
+            db.session.add(new_bill)
+            
+            # Notify Patient
+            from models.notification import Notification
+            notif = Notification(
+                patient_id=appointment.patient_id,
+                message=f"Consultation completed. Your bill of ৳{amount} is ready. You can pay now online through 'My Payments'."
+            )
+            db.session.add(notif)
+    appointment.status = new_status
     db.session.commit()
     return jsonify(appointment.to_dict()), 200
 
+
 @appointment_bp.route('/appointments/<int:id>/confirm', methods=['PUT'])
+@token_required
+@roles_required('Admin', 'Receptionist')
 def confirm_appointment(id):
     try:
         appointment = Appointment.query.get_or_404(id)
@@ -120,7 +150,7 @@ def confirm_appointment(id):
             )
             db.session.add(new_notification)
         except Exception as e:
-            print(f"Notification failed (suppressed): {e}")
+            logger.warning("Notification creation failed (suppressed): %s", e)
         
         db.session.commit()
         return jsonify({'message': 'Appointment confirmed', 'appointment': appointment.to_dict()}), 200
@@ -129,13 +159,35 @@ def confirm_appointment(id):
         return jsonify({'error': str(e)}), 500
 
 @appointment_bp.route('/appointments/<int:id>/cancel', methods=['PUT'])
+@token_required
 def cancel_appointment(id):
     appointment = Appointment.query.get_or_404(id)
+
+    # Staff can cancel any appointment; a Patient may only cancel their own.
+    role = request.current_user.get('role')
+    if role == 'Patient':
+        from models.patient import Patient
+        patient = Patient.query.filter_by(user_id=request.current_user.get('user_id')).first()
+        if not patient or patient.id != appointment.patient_id:
+            return jsonify({'error': 'You can only cancel your own appointments'}), 403
+    elif role not in ('Admin', 'Receptionist', 'Doctor'):
+        return jsonify({'error': 'Unauthorized'}), 403
+
     appointment.status = 'Cancelled'
+    
+    # If an Appointment is cancelled before payment, the Bill is deleted automatically.
+    from models.bill import Bill
+    bill = Bill.query.filter_by(appointment_id=appointment.id, status='UNPAID').first()
+    if bill:
+        db.session.delete(bill)
+        
     db.session.commit()
     return jsonify(appointment.to_dict()), 200
 
+
 @appointment_bp.route('/appointments/<int:id>/reschedule', methods=['PUT'])
+@token_required
+@roles_required('Admin', 'Receptionist', 'Patient')
 def reschedule_appointment(id):
     appointment = Appointment.query.get_or_404(id)
     data = request.get_json()
@@ -157,13 +209,21 @@ def reschedule_appointment(id):
         return jsonify({'error': str(e)}), 500
 
 @appointment_bp.route('/appointments/<int:id>', methods=['DELETE'])
+@token_required
+@roles_required('Admin', 'Receptionist')
 def delete_appointment(id):
     appointment = Appointment.query.get_or_404(id)
     try:
-        db.session.add(appointment) # Ensure it's in session? Actually get_or_404 does it.
+        # If a Payment exists with status PAID (via Bill status), the related Appointment must not be deletable.
+        from models.bill import Bill
+        bill = Bill.query.filter_by(appointment_id=appointment.id).first()
+        if bill and bill.status == 'PAID':
+            return jsonify({'error': 'Cannot delete an appointment that has been paid for.'}), 400
+            
         db.session.delete(appointment)
         db.session.commit()
         return jsonify({'message': 'Appointment deleted'}), 200
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
+

@@ -2,10 +2,13 @@ from flask import Blueprint, request, jsonify
 from datetime import datetime
 from models import db
 from models.medical_record import MedicalRecord
+from utils.auth import token_required, roles_required
 
 record_bp = Blueprint('record_bp', __name__)
 
 @record_bp.route('/medical_records', methods=['POST'])
+@token_required
+@roles_required('Admin', 'Doctor')
 def create_record():
     import json
     data = request.get_json()
@@ -39,6 +42,7 @@ def create_record():
         return jsonify({'error': str(e)}), 500
 
 @record_bp.route('/medical_records', methods=['GET'])
+@token_required
 def get_records():
     patient_filter = request.args.get('patient_id')
     query = MedicalRecord.query
@@ -50,6 +54,8 @@ def get_records():
     return jsonify([r.to_dict() for r in records]), 200
 
 @record_bp.route('/medical_records/<int:id>', methods=['DELETE'])
+@token_required
+@roles_required('Admin', 'Doctor')
 def delete_record(id):
     record = MedicalRecord.query.get_or_404(id)
     try:
@@ -60,6 +66,8 @@ def delete_record(id):
         return jsonify({'error': str(e)}), 500
 
 @record_bp.route('/medical_records/<int:id>', methods=['PUT'])
+@token_required
+@roles_required('Admin', 'Doctor')
 def update_record(id):
     import json
     record = MedicalRecord.query.get_or_404(id)
