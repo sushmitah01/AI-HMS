@@ -1,338 +1,153 @@
-# AI-HMS — AI-Powered Hospital Management System
+# AI-HMS: AI consultation scribe for busy OPD clinics
 
-A full-stack, decision-support-oriented healthcare information system built as an undergraduate capstone project. It combines a Flask REST API, a React frontend, a PostgreSQL database, scikit-learn ML models, and an LLM-based chatbot into a single, modular platform for managing hospital workflows and assisting clinical staff with patient risk analysis.
+> Doctors in high-volume outpatient clinics spend a large share of each consultation writing notes and prescriptions by hand. AI-HMS turns a doctor's rough, mixed English/Bangla note into a structured record, checks the prescription against deterministic safety rules, and saves **nothing** until the doctor has reviewed and accepted it.
 
-**Live demo:** [ai-hms-one.vercel.app](https://ai-hms-one.vercel.app) *(backend cold-start on Render may cause a short delay on first load)*
-
----
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Tech Stack](#tech-stack)
-- [Features](#features)
-- [User Roles](#user-roles)
-- [Machine Learning Pipeline](#machine-learning-pipeline)
-- [Database Schema](#database-schema)
-- [Getting Started](#getting-started)
-- [Environment Variables](#environment-variables)
-- [Project Structure](#project-structure)
-- [Limitations & Roadmap](#limitations--roadmap)
-- [Ethical Disclaimer](#ethical-disclaimer)
-- [License](#license)
+**Status: academic prototype. Not clinically validated. Not for real patient care.**
 
 ---
 
-## Overview
+## The problem and who it is for
 
-AI-HMS automates the day-to-day administrative workflows of a hospital (patient registration, appointments, medical records) while layering an ML-driven decision support engine on top. Doctors get a risk score for each patient — Low / Medium / High — derived from their medical history. A domain-restricted chatbot explains those predictions and summarises patient timelines in plain language.
+- **User:** a doctor seeing dozens of OPD patients a day in a small or mid-size clinic where records are paper or barely digital.
+- **Pain:** documentation time, illegible or incomplete prescriptions, and no systematic check for dangerous drug combinations or allergies.
+- **Goal:** cut minutes per consultation without removing the doctor's judgement.
+- **Success metric:** *how often does the doctor accept the AI draft unchanged, and which fields do they keep correcting?* The system measures this itself (see [Evaluation](#evaluation)).
 
-The system is **not** a diagnostic tool. Every AI output is advisory; clinical decisions remain with the medical staff.
+The rest of the app (patients, appointments, billing, notifications) exists to give the scribe real context: who the patient is, which doctor owns the visit, and where the finished record goes.
+
+---
+
+## How the scribe works
+
+```
+Doctor types / dictates rough note  ──►  POST /api/scribe/draft
+                                              │
+        access check: doctor must have a relationship with the patient
+                                              │
+                      LLM (Gemini) structures the note into JSON
+                      - may only use facts present in the note
+                      - leaves fields empty rather than guessing
+                      - lists phrases it could not interpret ("uncertain")
+                                              │
+                 server-side schema validation + sanitising
+                                              │
+        deterministic safety rules (no LLM): interactions, duplicates,
+        allergy / class cross-match, incomplete order lines
+                                              │
+            Doctor reviews & edits ──► POST /api/scribe/<id>/review
+                 • accept → becomes a MedicalRecord (author = logged-in doctor)
+                 • reject → logged with reason
+                 • high-severity flags must be explicitly acknowledged
+                                              │
+            ai_suggestions table keeps draft vs final, per-field edits
+```
+
+Design choices that matter:
+
+1. **The AI is a structurer, not a clinician.** It never produces diagnoses or doses the doctor did not state.
+2. **Rules decide whether to warn.** An LLM saying "no interactions" is not evidence of safety, so medication checks are deterministic (`services/med_safety.py`).
+3. **Human in the loop by construction.** A draft is not a record. Every accept/edit/reject is logged.
+4. **Fails honestly.** If the AI is unavailable or returns junk, the API returns a 503, never fabricated output.
+
+---
+
+## What is real and what is a stub
+
+| Component | Status |
+|---|---|
+| Auth (JWT, hashed passwords, staff whitelist), roles, rate limits | Working |
+| Record-level access control (doctor→own patients, patient→self, receptionist→no clinical data) | Working, covered by tests |
+| Patients, appointments, records, billing, notifications | Working (basic CRUD) |
+| **AI consultation scribe** (Gemini → validated JSON → review → record) | Working; needs `GEMINI_API_KEY` |
+| **Medication safety rules** | Working but a **small hand-curated starter set**, not a full interaction database |
+| Evaluation logging + metrics (`/api/scribe/metrics`) | Working; **no published accuracy numbers yet** |
+| Health-risk and readmission models (`ml/`) | **Demo stubs.** Trained on synthetic, rule-labelled data; they re-learn the rule that generated them. Responses carry a disclaimer. Not connected to patient records. |
+| Symptom checker / "AI Insights" Gemini wrappers | Prototype. Free-text LLM output, no clinical validation |
+| Chat widget (`chat_service.py`) | Keyword matcher, **not an LLM** |
+
+Things this README previously claimed that the code does **not** do have been removed: TF-IDF, `ml_predictions` and audit-log tables, `/api/ml/retrain`, Flask-Migrate, FHIR, JSONB, PostgreSQL-only storage.
+
+---
+
+## Evaluation
+
+The scribe is only useful if doctors keep what it writes. Every reviewed draft stores the model output and the final text, so we can compute:
+
+- **Unchanged-accept rate**, **accepted-after-edit rate**, **rejection rate**
+- **Edits by field** (e.g. are medicines edited far more than diagnoses?)
+- **Drafts with safety flags**
+
+`GET /api/scribe/metrics` returns these per doctor (or globally for Admin).
+
+**Before any claim of accuracy**, build a gold set: ~50-100 de-identified or fabricated consultation notes (mixed English/Bangla, abbreviations, messy dictation) with doctor-written reference records. Score field-level accuracy, **hallucinated drugs/doses** (target: zero), and unsafe omissions. No such numbers exist yet; do not quote any.
 
 ---
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────┐
-│           React + Tailwind (Vite)        │  ← Frontend (Vercel)
-│  Recharts dashboards · Role-based UI     │
-└────────────────────┬────────────────────┘
-                     │ REST API (JSON)
-┌────────────────────▼────────────────────┐
-│              Flask (Python)              │  ← Backend (Render)
-│  SQLAlchemy ORM · JWT Auth · Blueprint   │
-└──────────┬───────────────────┬──────────┘
-           │                   │
-┌──────────▼──────┐   ┌────────▼─────────┐
-│   PostgreSQL     │   │   ML Engine       │
-│  (primary store) │   │  scikit-learn     │
-│  JSONB for semi- │   │  Logistic Reg.    │
-│  structured data │   │  Random Forest    │
-└─────────────────┘   │  TF-IDF vectors   │
-                       └────────┬─────────┘
-                                │
-                       ┌────────▼─────────┐
-                       │  LLM Chatbot API  │
-                       │  (domain-scoped)  │
-                       └──────────────────┘
-```
-
----
-
-## Tech Stack
-
 | Layer | Technology |
 |---|---|
-| Frontend | React.js, Tailwind CSS, Recharts, Vite |
-| Backend | Flask, SQLAlchemy ORM, Flask-JWT-Extended |
-| Database | PostgreSQL with JSONB support |
-| ML | scikit-learn (Logistic Regression, Random Forest, TF-IDF) |
-| Chatbot | LLM API (external, domain-restricted prompt) |
-| Deployment | Vercel (frontend), Render (backend) |
+| Frontend | React, Vite, Tailwind, Recharts |
+| Backend | Flask, SQLAlchemy, PyJWT, Flask-Limiter |
+| Database | SQLite by default; PostgreSQL via `DATABASE_URL` |
+| AI | Google Gemini (structured JSON output, low temperature); scikit-learn demo models |
+| Tests | pytest (56 tests: auth, access control, safety rules, scribe flow with mocked LLM) |
+
+Key files: `backend/routes/scribe_routes.py`, `backend/services/scribe_service.py`, `backend/services/med_safety.py`, `backend/utils/access.py`, `backend/models/ai_suggestion.py`, `frontend/src/pages/Scribe.jsx`.
+
+### Access rules
+
+| Role | Patients | Clinical records | Scribe |
+|---|---|---|---|
+| Admin | all | all | metrics only |
+| Doctor | only patients they have an appointment/record with | only those patients; edit/delete only own | yes |
+| Receptionist | all demographics | **none** | no |
+| Patient | self only | self only | no |
+
+Record authorship comes from the login token, never from a client-supplied `doctor_id`.
 
 ---
 
-## Features
-
-### Patient Management
-- Register and update patient profiles
-- Track full medical history across visits
-- Store clinical notes with JSONB for flexible semi-structured data
-- Longitudinal view of a patient's treatment timeline
-
-### Appointment & Queue Management
-- Schedule appointments with conflict detection
-- Per-doctor queue views
-- Full appointment lifecycle: pending → confirmed → completed / cancelled
-
-### Medical Records
-- Attach diagnoses, prescriptions, and test recommendations to each visit
-- Records are linked to both the patient and the attending doctor
-
-### AI Decision Support
-The ML module reads structured patient data, engineers features, and outputs a risk tier:
-
-| Risk Level | Meaning |
-|---|---|
-| 🟢 Low | Routine monitoring |
-| 🟡 Medium | Elevated attention recommended |
-| 🔴 High | Prioritise for review |
-
-Predictions are stored in the database alongside the input features, so they are reproducible and auditable.
-
-### Analytics Dashboard
-- Daily patient intake and discharge trends (Recharts)
-- Doctor workload distribution
-- High-risk patient list for rapid review
-- Hospital utilisation over time
-
-### AI Chatbot Assistant
-A prompt-engineered, domain-locked chatbot that can:
-- Explain what drove a patient's risk score
-- Summarise a patient's recent visit history in plain language
-- Answer questions about hospital workflows
-
-> The chatbot is explicitly prevented from providing medical diagnoses or treatment recommendations.
-
-### Security
-- Passwords stored as hashes (never plain text)
-- JWT-based stateless authentication
-- Role-based route guards (backend + frontend)
-- Input validation on all API endpoints
-- Audit log table tracks sensitive actions
-
----
-
-## User Roles
-
-| Role | What they can do |
-|---|---|
-| **Admin** | Manage user accounts, view analytics, oversee the full system |
-| **Doctor** | View/edit patient records, see AI risk scores, use the chatbot |
-| **Receptionist** | Register patients, schedule and manage appointments |
-
----
-
-## Machine Learning Pipeline
-
-```
-PostgreSQL patient data
-        ↓
-  Data retrieval (SQLAlchemy)
-        ↓
-  Preprocessing (Pandas)
-   - handle missing values
-   - encode categorical fields
-        ↓
-  Feature engineering
-   - visit frequency, diagnosis codes,
-     age, comorbidity flags, etc.
-        ↓
-  Model training
-   - Logistic Regression (baseline)
-   - Random Forest (primary)
-   - TF-IDF for clinical text fields
-        ↓
-  Prediction API endpoint
-        ↓
-  Results stored in ml_predictions table
-        ↓
-  Chatbot explanation layer
-```
-
-The trained model is serialised and loaded at API startup. Re-training can be triggered by calling the admin-only `/api/ml/retrain` endpoint.
-
----
-
-## Database Schema
-
-Key tables and their relationships:
-
-```
-users ──────────────── patients
-  │                       │
-  │ (doctor FK)           │ (patient FK)
-  ▼                       ▼
-appointments ────── medical_records
-                          │
-                          ▼
-                    ml_predictions
-
-audit_logs (references users + any table)
-```
-
-- **users** — all staff accounts with role field
-- **patients** — demographics and contact info
-- **appointments** — datetime, doctor, status, conflict flags
-- **medical_records** — diagnosis, prescription, test orders; JSONB for extensible clinical data
-- **ml_predictions** — risk tier, confidence score, feature snapshot, timestamp
-- **audit_logs** — who did what and when
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- Python 3.10+
-- Node.js 18+
-- PostgreSQL 14+
-
-### 1. Clone the repo
+## Getting started
 
 ```bash
-git clone https://github.com/sushmitah01/AI-HMS.git
-cd AI-HMS
-```
-
-### 2. Backend
-
-```bash
-cd backend
-python -m venv venv
-
-# Activate:
-# macOS/Linux:
-source venv/bin/activate
-# Windows:
-venv\Scripts\activate
-
+git clone https://github.com/sushmitah01/AI-HMS.git && cd AI-HMS/backend
+python -m venv venv && source venv/bin/activate      # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+cp .env.example .env     # set SECRET_KEY and GEMINI_API_KEY
+python app.py            # http://localhost:5000
+
+cd ../frontend && npm install && npm run dev          # http://localhost:5173
+cd ../backend && pip install -r requirements-dev.txt && pytest
 ```
 
-Copy `.env.example` to `.env` and fill in your values (see [Environment Variables](#environment-variables)), then:
-
-```bash
-flask db upgrade      # run migrations
-python app.py         # starts on http://localhost:5000
-```
-
-### 3. Frontend
-
-```bash
-cd ../frontend
-npm install
-npm run dev           # starts on http://localhost:5173
-```
+Tables are created automatically (`db.create_all()`). Existing databases pick up the new `ai_suggestions` table on next start; no existing columns changed.
 
 ---
 
-## Environment Variables
+## Known limitations / roadmap
 
-Create `backend/.env`:
+**Safety & compliance (highest priority)**
+- Patient notes are sent to a third-party LLM. Needs explicit consent, a data-processing agreement, redaction of direct identifiers, and a regional/self-hosted option before any real use.
+- Replace the starter interaction table with an authoritative source (RxNorm + a drug-knowledge database) and a local brand→generic formulary.
+- Add allergies as a first-class patient field (currently entered per draft).
+- Short-lived tokens with refresh/revocation, a real audit log, and migrations (Alembic).
 
-```env
-# Database
-DATABASE_URL=postgresql://user:password@localhost:5432/ai_hms
+**Scribe**
+- Voice input (speech-to-text for Bangla/English code-switching), then the same pipeline.
+- Gold-set evaluation and a published results table.
+- Prescription print/PDF in the patient's language.
 
-# Auth
-JWT_SECRET_KEY=your-secret-key
-
-# LLM Chatbot
-LLM_API_KEY=your-llm-api-key
-LLM_API_URL=https://api.your-llm-provider.com/v1/chat
-
-# Flask
-FLASK_ENV=development
-```
-
----
-
-## Project Structure
-
-```
-AI-HMS/
-├── backend/
-│   ├── app.py              # Flask app factory & entry point
-│   ├── models/             # SQLAlchemy models
-│   │   ├── user.py
-│   │   ├── patient.py
-│   │   ├── appointment.py
-│   │   ├── medical_record.py
-│   │   └── ml_prediction.py
-│   ├── routes/             # API blueprints
-│   │   ├── auth.py
-│   │   ├── patients.py
-│   │   ├── appointments.py
-│   │   ├── records.py
-│   │   ├── analytics.py
-│   │   ├── ml.py
-│   │   └── chatbot.py
-│   ├── ml/                 # ML training & inference
-│   │   ├── pipeline.py
-│   │   └── model.pkl       # serialised model (generated)
-│   ├── migrations/
-│   └── requirements.txt
-│
-└── frontend/
-    ├── src/
-    │   ├── pages/          # route-level components
-    │   ├── components/     # shared UI components
-    │   ├── hooks/          # custom React hooks
-    │   └── api/            # Axios API client
-    ├── package.json
-    └── vite.config.js
-```
+**Other directions**
+- No-show prediction from real appointment history; queue/wait-time forecasting.
+- Lab-report and paper-prescription digitisation (OCR → structured data).
+- Replace the demo ML stubs with models trained on real data and calibrated, or remove them.
 
 ---
 
-## Limitations & Roadmap
+## Ethical disclaimer
 
-**Current limitations**
-- Prototype; not cleared for clinical deployment
-- ML models trained on a small synthetic/limited dataset — predictions should not be trusted in real settings
-- No real-time device or EHR integration
-- Single-region deployment
-
-**Planned improvements**
-- Enhance Security Issues across all user login
-- Disease Classifer using image
-- Deep learning models for richer clinical text analysis
-- FHIR-compatible data exchange for EHR integration
-- Mobile app (React Native)
-- Real-time alerting for critical risk-level changes
-- Advanced NLP summarisation of discharge notes
-
----
-
-## Ethical Disclaimer
-
-This system is a **prototype built for academic purposes**. It is not validated for, nor intended to be used in, real clinical environments. All AI outputs are for demonstration only and must not influence patient care decisions.
-
----
-
-## Contributing
-
-1. Fork the repo
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Commit your changes: `git commit -m "Add my feature"`
-4. Push and open a pull request
-
-Please open an issue first for significant changes so we can discuss the approach.
-
----
+Prototype for academic purposes. AI output is a draft for a qualified clinician to verify. It must not be used to make or influence real clinical decisions.
 
 ## License
 
